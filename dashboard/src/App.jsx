@@ -7,17 +7,19 @@ import {
   Unlink, 
   Link as LinkIcon,
   ShieldCheck,
-  BarChart3,
-  AlertCircle,
-  Database,
-  Clock
+  AlertTriangle,
+  Lock,
+  Unlock,
+  User,
+  Settings,
+  Bell,
+  Cpu
 } from 'lucide-react';
 import { 
   LineChart, 
   Line, 
   XAxis, 
   YAxis, 
-  CartesianGrid, 
   Tooltip, 
   ResponsiveContainer,
   AreaChart,
@@ -25,271 +27,331 @@ import {
 } from 'recharts';
 
 function App() {
-  const [data, setData] = useState({
-    flow: 0,
-    tds: 0,
-    turbidity: 0,
-    total_flow: 0
-  });
-  const [history, setHistory] = useState([]);
-  const [isConnected, setIsConnected] = useState(false);
-  const [error, setError] = useState(null);
-  const [lastUpdateTime, setLastUpdateTime] = useState('Never');
+  const [govData, setGovData] = useState({ flow: 0, tds: 0, turbidity: 0, total_flow: 0 });
+  const [consumer1, setConsumer1] = useState({ id: 'C1', flow: 0, total: 0, valve: false, tamper: false, emergency: false });
+  const [consumer2, setConsumer2] = useState({ id: 'C2', flow: 0, total: 0, valve: false, tamper: false, emergency: false });
   
-  const portRef = useRef(null);
-  const readerRef = useRef(null);
+  const [ports, setPorts] = useState({ gov: null, c1: null, c2: null });
+  const [history, setHistory] = useState([]);
+  const [view, setView] = useState('gov'); // 'gov' or 'consumer'
 
-  const connectSerial = async () => {
+  // Theft Detection Logic: If Gov Flow > (Consumer1 Flow + Consumer2 Flow) + Tolerance
+  const totalConsumerFlow = consumer1.flow + consumer2.flow;
+  const theftDetected = govData.flow > (totalConsumerFlow + 2.0) && govData.flow > 1.0;
+
+  const connectNode = async (type) => {
     try {
       const port = await navigator.serial.requestPort();
-      try {
-        await port.open({ baudRate: 115200 });
-      } catch (openErr) {
-        if (openErr.name === 'NetworkError') {
-          throw new Error('Port is busy. Please close the Arduino Serial Monitor.');
-        }
-        throw openErr;
-      }
-      portRef.current = port;
-      setIsConnected(true);
-      setError(null);
-      readLoop(port);
+      await port.open({ baudRate: 115200 });
+      setPorts(prev => ({ ...prev, [type]: port }));
+      readLoop(port, type);
     } catch (err) {
-      console.error('Serial Connection Error:', err);
-      setError(err.message || 'Could not connect to USB device');
-      setIsConnected(false);
+      console.error(`Error connecting ${type}:`, err);
     }
   };
 
-  const disconnectSerial = async () => {
-    try {
-      if (readerRef.current) await readerRef.current.cancel();
-      if (portRef.current) await portRef.current.close();
-    } catch (err) {
-      console.error('Disconnect error:', err);
-    } finally {
-      setIsConnected(false);
-      portRef.current = null;
-      readerRef.current = null;
-    }
+  const sendCommand = async (type, command) => {
+    const port = ports[type];
+    if (!port) return;
+    const encoder = new TextEncoder();
+    const writer = port.writable.getWriter();
+    await writer.write(encoder.encode(JSON.stringify(command) + '\n'));
+    writer.releaseLock();
   };
 
-  const readLoop = async (port) => {
-    try {
-      const textDecoder = new TextDecoderStream();
-      const readableStreamClosed = port.readable.pipeTo(textDecoder.writable);
-      const reader = textDecoder.readable.getReader();
-      readerRef.current = reader;
+  const readLoop = async (port, type) => {
+    const textDecoder = new TextDecoderStream();
+    port.readable.pipeTo(textDecoder.writable);
+    const reader = textDecoder.readable.getReader();
+    let buffer = '';
 
-      let buffer = '';
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += value;
-        const lines = buffer.split('\n');
-        buffer = lines.pop();
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += value;
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
 
-        for (const line of lines) {
-          try {
-            const cleanLine = line.trim();
-            if (cleanLine.startsWith('{') && cleanLine.endsWith('}')) {
-              const jsonData = JSON.parse(cleanLine);
-              setData(jsonData);
-              setLastUpdateTime(new Date().toLocaleTimeString());
-              setHistory(prev => [...prev.slice(-49), {
-                ...jsonData,
-                time: new Date().toLocaleTimeString()
-              }]);
-            }
-          } catch (e) {}
-        }
-      }
-    } catch (err) {
-      console.error('Read loop error:', err);
-      if (isConnected) {
-        setError('Connection lost. Please check the USB cable.');
-        setIsConnected(false);
+      for (const line of lines) {
+        try {
+          const data = JSON.parse(line.trim());
+          if (type === 'gov') {
+            setGovData(data);
+            setHistory(prev => [...prev.slice(-19), { ...data, time: new Date().toLocaleTimeString() }]);
+          } else if (type === 'c1') {
+            setConsumer1(prev => ({ ...prev, ...data }));
+          } else if (type === 'c2') {
+            setConsumer2(prev => ({ ...prev, ...data }));
+          }
+        } catch (e) {}
       }
     }
-  };
-
-  const CustomTooltip = ({ active, payload }) => {
-    if (active && payload && payload.length) {
-      return (
-        <div className="custom-tooltip" style={{ padding: '10px' }}>
-          <p style={{ margin: 0, fontSize: '0.875rem' }}>{`${payload[0].value.toFixed(2)}`}</p>
-        </div>
-      );
-    }
-    return null;
   };
 
   return (
-    <div className="bg-space">
+    <div className="bg-space min-h-screen text-white font-sans">
       <div className="orb orb-1"></div>
       <div className="orb orb-2"></div>
-      <div className="orb orb-3"></div>
 
-      <div className="glass-container">
-        <header className="header-glass">
-          <div className="brand">
-            <div className="brand-icon">
-              <Droplets className="icon-main" size={24} strokeWidth={2.5} />
+      <div className="glass-container max-w-7xl mx-auto p-6">
+        {/* Header */}
+        <header className="flex justify-between items-center mb-8 glass p-6 rounded-2xl">
+          <div className="flex items-center gap-4">
+            <div className="p-3 bg-blue-500/20 rounded-xl">
+              <Droplets className="text-blue-400" size={32} />
             </div>
-            <div className="brand-text">
-              <h1>JAL BOARD</h1>
-              <p>Smart Water Grid</p>
+            <div>
+              <h1 className="text-3xl font-bold tracking-tight">JAL BOARD <span className="text-blue-400">PRO</span></h1>
+              <p className="text-white/50 text-sm">Smart Water Management & Theft Detection</p>
             </div>
           </div>
-          
-          <div className="controls">
-            <div className="status-badge">
-              <div className={`dot ${isConnected ? 'online' : ''}`}></div>
-              {isConnected ? 'System Live' : 'System Offline'}
-            </div>
-            
-            {isConnected ? (
-              <button onClick={disconnectSerial} className="btn btn-disconnect">
-                <Unlink size={18} /> Disconnect Node
-              </button>
-            ) : (
-              <button onClick={connectSerial} className="btn btn-connect">
-                <LinkIcon size={18} /> Connect Node
-              </button>
-            )}
+
+          <div className="flex gap-4">
+            <button 
+              onClick={() => setView('gov')}
+              className={`px-6 py-2 rounded-xl transition-all ${view === 'gov' ? 'bg-blue-600 shadow-lg shadow-blue-600/30' : 'bg-white/5 hover:bg-white/10'}`}
+            >
+              Gov Dashboard
+            </button>
+            <button 
+              onClick={() => setView('consumer')}
+              className={`px-6 py-2 rounded-xl transition-all ${view === 'consumer' ? 'bg-blue-600 shadow-lg shadow-blue-600/30' : 'bg-white/5 hover:bg-white/10'}`}
+            >
+              Consumer Hub
+            </button>
           </div>
         </header>
 
-        {error && (
-          <div className="error-banner">
-            <AlertCircle size={24} />
-            <div>
-              <h4 style={{ fontWeight: 600, marginBottom: '0.25rem' }}>Connection Failed</h4>
-              <p style={{ fontSize: '0.875rem', opacity: 0.9 }}>{error}</p>
-            </div>
+        {/* Alerts Section */}
+        {(theftDetected || consumer1.tamper || consumer2.tamper) && (
+          <div className="mb-8 grid grid-cols-1 md:grid-cols-3 gap-4">
+            {theftDetected && (
+              <div className="bg-red-500/20 border border-red-500/50 p-4 rounded-xl flex items-center gap-4 animate-pulse">
+                <AlertTriangle className="text-red-500" size={24} />
+                <div>
+                  <h4 className="font-bold text-red-500">Water Theft Detected!</h4>
+                  <p className="text-xs opacity-80">Supply mismatch: +{(govData.flow - totalConsumerFlow).toFixed(2)} L/min</p>
+                </div>
+              </div>
+            )}
+            {consumer1.tamper && (
+              <div className="bg-orange-500/20 border border-orange-500/50 p-4 rounded-xl flex items-center gap-4">
+                <ShieldCheck className="text-orange-500" size={24} />
+                <div>
+                  <h4 className="font-bold text-orange-500">Consumer 1 Tamper!</h4>
+                  <p className="text-xs opacity-80">Meter movement detected.</p>
+                </div>
+              </div>
+            )}
+            {consumer2.tamper && (
+              <div className="bg-orange-500/20 border border-orange-500/50 p-4 rounded-xl flex items-center gap-4">
+                <ShieldCheck className="text-orange-500" size={24} />
+                <div>
+                  <h4 className="font-bold text-orange-500">Consumer 2 Tamper!</h4>
+                  <p className="text-xs opacity-80">Meter movement detected.</p>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
-        <div className="main-grid">
-          {/* Flow Rate Card */}
-          <div className="metric-card" style={{ '--card-glow': 'var(--color-flow)', '--card-color': 'var(--color-flow)' }}>
-            <div className="card-header">
-              <div>
-                <h3 className="card-title">Flow Velocity</h3>
-                <div className="card-value">
-                  {data.flow.toFixed(2)}
-                  <span className="card-unit">L/min</span>
+        {view === 'gov' ? (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            {/* Gov Stats */}
+            <div className="lg:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="glass p-6 rounded-3xl relative overflow-hidden">
+                <div className="flex justify-between mb-4">
+                  <h3 className="text-white/60 font-medium">Main Supply Flow</h3>
+                  <Activity className="text-blue-400" size={20} />
+                </div>
+                <div className="text-4xl font-bold mb-4">{govData.flow.toFixed(2)} <span className="text-lg font-normal text-white/40">L/min</span></div>
+                <div className="h-32">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={history}>
+                      <defs>
+                        <linearGradient id="colorFlow" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="#60a5fa" stopOpacity={0.3}/>
+                          <stop offset="95%" stopColor="#60a5fa" stopOpacity={0}/>
+                        </linearGradient>
+                      </defs>
+                      <Area type="monotone" dataKey="flow" stroke="#60a5fa" fillOpacity={1} fill="url(#colorFlow)" isAnimationActive={false} />
+                    </AreaChart>
+                  </ResponsiveContainer>
                 </div>
               </div>
-              <div className="card-icon">
-                <Activity size={24} />
-              </div>
-            </div>
-            <div className="chart-container">
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={history}>
-                  <defs>
-                    <linearGradient id="flowGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="var(--color-flow)" stopOpacity={0.4}/>
-                      <stop offset="95%" stopColor="var(--color-flow)" stopOpacity={0}/>
-                    </linearGradient>
-                  </defs>
-                  <Tooltip content={<CustomTooltip />} />
-                  <Area type="monotone" dataKey="flow" stroke="var(--color-flow)" strokeWidth={3} fillOpacity={1} fill="url(#flowGrad)" isAnimationActive={false} />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
 
-          {/* TDS Card */}
-          <div className="metric-card" style={{ '--card-glow': 'var(--color-tds)', '--card-color': 'var(--color-tds)' }}>
-            <div className="card-header">
-              <div>
-                <h3 className="card-title">Purity Index (TDS)</h3>
-                <div className="card-value">
-                  {data.tds.toFixed(0)}
-                  <span className="card-unit">PPM</span>
+              <div className="glass p-6 rounded-3xl">
+                <div className="flex justify-between mb-4">
+                  <h3 className="text-white/60 font-medium">System Diagnostics</h3>
+                  <Cpu className="text-purple-400" size={20} />
+                </div>
+                <div className="space-y-4">
+                  <div className="flex justify-between items-center">
+                    <span className="text-sm opacity-60">Purity (TDS)</span>
+                    <span className="font-bold text-blue-400">{govData.tds} PPM</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-sm opacity-60">Turbidity</span>
+                    <span className="font-bold text-emerald-400">{govData.turbidity} NTU</span>
+                  </div>
+                  <div className="pt-4 border-t border-white/5">
+                    <button 
+                      onClick={() => connectNode('gov')}
+                      className={`w-full py-2 rounded-lg flex items-center justify-center gap-2 transition-all ${ports.gov ? 'bg-emerald-500/20 text-emerald-400' : 'bg-white/5 hover:bg-white/10'}`}
+                    >
+                      {ports.gov ? <ShieldCheck size={18} /> : <LinkIcon size={18} />}
+                      {ports.gov ? 'Gov Node Active' : 'Connect Gov Node'}
+                    </button>
+                  </div>
                 </div>
               </div>
-              <div className="card-icon">
-                <Zap size={24} />
-              </div>
-            </div>
-            <div className="chart-container">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={history}>
-                  <Tooltip content={<CustomTooltip />} />
-                  <Line type="monotone" dataKey="tds" stroke="var(--color-tds)" strokeWidth={3} dot={false} isAnimationActive={false} />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
 
-          {/* Turbidity Card */}
-          <div className="metric-card" style={{ '--card-glow': 'var(--color-turb)', '--card-color': 'var(--color-turb)' }}>
-            <div className="card-header">
-              <div>
-                <h3 className="card-title">Clarity (Turbidity)</h3>
-                <div className="card-value">
-                  {data.turbidity.toFixed(1)}
-                  <span className="card-unit">NTU</span>
+              {/* Consumer Control Cards */}
+              <ConsumerControlCard 
+                id="1" 
+                data={consumer1} 
+                onConnect={() => connectNode('c1')} 
+                isConnected={!!ports.c1}
+                onToggleValve={(val) => sendCommand('c1', { valve: val })}
+                onResetTamper={() => sendCommand('c1', { resetTamper: true })}
+              />
+              <ConsumerControlCard 
+                id="2" 
+                data={consumer2} 
+                onConnect={() => connectNode('c2')} 
+                isConnected={!!ports.c2}
+                onToggleValve={(val) => sendCommand('c2', { valve: val })}
+                onResetTamper={() => sendCommand('c2', { resetTamper: true })}
+              />
+            </div>
+
+            {/* Sidebar Stats */}
+            <div className="space-y-6">
+              <div className="glass p-6 rounded-3xl border-l-4 border-blue-500">
+                <h3 className="text-lg font-bold mb-4">Grid Summary</h3>
+                <div className="space-y-4">
+                  <div className="p-4 bg-white/5 rounded-2xl">
+                    <div className="text-xs opacity-50 mb-1">Net Supply Volume</div>
+                    <div className="text-2xl font-bold">{govData.total_flow.toFixed(2)} L</div>
+                  </div>
+                  <div className="p-4 bg-white/5 rounded-2xl">
+                    <div className="text-xs opacity-50 mb-1">Total Consumption</div>
+                    <div className="text-2xl font-bold">{(consumer1.total + consumer2.total).toFixed(2)} L</div>
+                  </div>
                 </div>
               </div>
-              <div className="card-icon">
-                <Waves size={24} />
-              </div>
-            </div>
-            <div className="chart-container">
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={history}>
-                  <defs>
-                    <linearGradient id="turbGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="var(--color-turb)" stopOpacity={0.4}/>
-                      <stop offset="95%" stopColor="var(--color-turb)" stopOpacity={0}/>
-                    </linearGradient>
-                  </defs>
-                  <Tooltip content={<CustomTooltip />} />
-                  <Area type="monotone" dataKey="turbidity" stroke="var(--color-turb)" strokeWidth={3} fillOpacity={1} fill="url(#turbGrad)" isAnimationActive={false} />
-                </AreaChart>
-              </ResponsiveContainer>
             </div>
           </div>
+        ) : (
+          /* Consumer Hub View */
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+            <ConsumerHubView id="1" data={consumer1} />
+            <ConsumerHubView id="2" data={consumer2} />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ConsumerControlCard({ id, data, onConnect, isConnected, onToggleValve, onResetTamper }) {
+  return (
+    <div className={`glass p-6 rounded-3xl border-t-2 transition-all ${data.tamper ? 'border-orange-500 bg-orange-500/5' : 'border-white/5'}`}>
+      <div className="flex justify-between items-center mb-6">
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-white/5 rounded-lg text-white/60">
+            <User size={20} />
+          </div>
+          <h3 className="font-bold text-lg">Consumer {id}</h3>
+        </div>
+        <div className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-widest ${isConnected ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'}`}>
+          {isConnected ? 'Connected' : 'Offline'}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4 mb-6">
+        <div className="p-4 bg-white/5 rounded-2xl">
+          <div className="text-[10px] opacity-40 uppercase mb-1">Flow Rate</div>
+          <div className="text-xl font-bold">{data.flow.toFixed(2)}</div>
+        </div>
+        <div className="p-4 bg-white/5 rounded-2xl">
+          <div className="text-[10px] opacity-40 uppercase mb-1">Total Used</div>
+          <div className="text-xl font-bold">{data.total.toFixed(2)} L</div>
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        {!isConnected ? (
+          <button onClick={onConnect} className="w-full py-3 bg-blue-600 rounded-xl font-bold flex items-center justify-center gap-2">
+            <LinkIcon size={18} /> Connect Node {id}
+          </button>
+        ) : (
+          <>
+            <button 
+              onClick={() => onToggleValve(!data.valve)}
+              className={`w-full py-3 rounded-xl font-bold flex items-center justify-center gap-2 transition-all ${data.valve ? 'bg-red-500/20 text-red-500 border border-red-500/30' : 'bg-emerald-500/20 text-emerald-500 border border-emerald-500/30'}`}
+            >
+              {data.valve ? <Lock size={18} /> : <Unlock size={18} />}
+              {data.valve ? 'Close Valve' : 'Open Valve'}
+            </button>
+            {data.tamper && (
+              <button onClick={onResetTamper} className="w-full py-2 bg-orange-500/20 text-orange-500 rounded-lg text-sm font-medium">
+                Reset Tamper Alert
+              </button>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ConsumerHubView({ id, data }) {
+  return (
+    <div className="glass p-8 rounded-[2rem] relative overflow-hidden">
+      {data.emergency && (
+        <div className="absolute top-0 left-0 w-full h-1 bg-red-500 animate-pulse"></div>
+      )}
+      
+      <div className="flex justify-between items-start mb-8">
+        <div>
+          <span className="text-blue-400 font-bold tracking-widest text-xs uppercase">Consumer Dashboard</span>
+          <h2 className="text-3xl font-black mt-2">ACCOUNT #{id}00-BGI</h2>
+        </div>
+        <div className={`p-4 rounded-2xl ${data.valve ? 'bg-emerald-500/10 text-emerald-500' : 'bg-red-500/10 text-red-500'}`}>
+          {data.valve ? <Unlock size={32} /> : <Lock size={32} />}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-6 mb-8">
+        <div className="p-6 bg-white/5 rounded-3xl flex justify-between items-center">
+          <div>
+            <div className="text-sm opacity-50 mb-1">Current Usage</div>
+            <div className="text-4xl font-bold">{data.total.toFixed(3)} <span className="text-lg opacity-30">Litres</span></div>
+          </div>
+          <Activity className="text-blue-400 opacity-20" size={48} />
         </div>
 
-        <div className="bottom-grid">
-          <div className="info-card">
-            <div className="info-header">
-              <ShieldCheck className="icon-main" size={24} />
-              <h3>System Diagnostics</h3>
+        {data.emergency && (
+          <div className="p-6 bg-red-500/10 border border-red-500/20 rounded-3xl">
+            <div className="flex items-center gap-3 text-red-500 mb-2 font-bold">
+              <Bell size={20} className="animate-bounce" />
+              EMERGENCY ACCESS ACTIVE
             </div>
-            <div>
-              <div className="data-row">
-                <span className="data-label">Total Supply Volume</span>
-                <span className="data-val val-highlight">{data.total_flow.toFixed(3)} L</span>
-              </div>
-              <div className="data-row">
-                <span className="data-label">Hardware Node</span>
-                <span className="data-val">GOV_UNO_SECURE</span>
-              </div>
-              <div className="data-row">
-                <span className="data-label">Last Sync</span>
-                <span className="data-val" style={{ color: 'var(--color-turb)' }}>{lastUpdateTime}</span>
-              </div>
-            </div>
+            <p className="text-sm text-red-500/70">You are using emergency water quota. Access will be cut automatically after 5.000 Litres.</p>
           </div>
+        )}
+      </div>
 
-          <div className="info-card" style={{ position: 'relative', overflow: 'hidden' }}>
-            <div className="info-header">
-              <Database className="icon-main" size={24} />
-              <h3>Network Infrastructure</h3>
-            </div>
-            <p style={{ color: 'var(--text-muted)', lineHeight: '1.6', fontSize: '0.95rem' }}>
-              The smart grid is actively monitoring real-time flow differentials and telemetry. To maintain data integrity, ensure the USB connection remains stable and serial monitors are closed during operation.
-            </p>
-            
-            <div style={{ marginTop: '2rem', height: '6px', background: 'rgba(255,255,255,0.05)', borderRadius: '3px', overflow: 'hidden' }}>
-              <div style={{ width: isConnected ? '100%' : '0%', height: '100%', background: 'var(--color-turb)', transition: 'width 1s cubic-bezier(0.4, 0, 0.2, 1)' }}></div>
-            </div>
+      <div className="grid grid-cols-2 gap-4">
+        <div className="p-4 bg-white/5 rounded-2xl border border-white/5">
+          <div className="text-xs opacity-40 mb-1">Flow Velocity</div>
+          <div className="text-xl font-bold">{data.flow.toFixed(2)} L/m</div>
+        </div>
+        <div className="p-4 bg-white/5 rounded-2xl border border-white/5">
+          <div className="text-xs opacity-40 mb-1">Security Status</div>
+          <div className={`text-xl font-bold ${data.tamper ? 'text-orange-500' : 'text-emerald-500'}`}>
+            {data.tamper ? 'Alert' : 'Secure'}
           </div>
         </div>
       </div>
